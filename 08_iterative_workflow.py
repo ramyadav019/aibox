@@ -1,30 +1,24 @@
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Literal, Annotated
 from dotenv import load_dotenv
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
+from langchain_mistralai import ChatMistralAI
 
 load_dotenv()
 
 # Generator: current NVIDIA endpoint for text generation
 generator_llm = ChatNVIDIA(
-    model="google/gemma-4-31b-it",
+    model="openai/gpt-4o-mini",
     timeout=180,
     max_completion_tokens=128,
 )
 
-evaluation_llm = ChatNVIDIA(
-    model="openai/gpt-oss-120b",  # Frontier 120B reasoning model
-    timeout=180,
-    max_completion_tokens=256,
-)
+evaluation_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash", temperature=0)
 
-optimizer_llm = ChatNVIDIA(
-    model="nvidia/nemotron-3-super-120b-a12b",  # Flagship planning & agent model
-    timeout=180,
-    max_completion_tokens=128,
-).with_thinking_mode(enabled=True)
+optimizer_llm = ChatMistralAI(model="mistral-7b-instruct-v0.1")
 
 
 class TweetState(TypedDict):

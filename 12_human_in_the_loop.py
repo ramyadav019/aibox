@@ -221,4 +221,4 @@ print("\n===================================")
 print("FINAL RESULT")
 print("===================================")
 
-print(result)
+print(result["explanation"])
