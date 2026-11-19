@@ -22,3 +22,7 @@ Thumbs.db
 Chatbot/node_modules
 Chatbot/dist
 Chatbot/_pycache__
+*.db
+*.db-shm
+*.db-wal
+Chatbot/*.db*
