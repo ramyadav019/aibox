@@ -19,20 +19,21 @@ from pydantic import BaseModel
 load_dotenv()
 
 
-api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-base_url = os.getenv("OPENAI_API_BASE") or os.getenv("GEMINI_BASE_URL")
-model_name = os.getenv("GEMINI_MODEL") or os.getenv("OPENAI_MODEL") or "gemini-3.1-pro"
+def get_llm():
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy-api-key"
+    base_url = os.getenv("OPENAI_API_BASE") or os.getenv("GEMINI_BASE_URL")
+    model_name = os.getenv("GEMINI_MODEL") or os.getenv("OPENAI_MODEL") or "gemini-3.1-pro"
 
-llm_kwargs = {
-    "model": model_name,
-    "temperature": 0.7,
-}
-if api_key:
-    llm_kwargs["api_key"] = api_key
-if base_url:
-    llm_kwargs["base_url"] = base_url
+    llm_kwargs = {
+        "model": model_name,
+        "temperature": 0.7,
+        "api_key": api_key,
+    }
+    if base_url:
+        llm_kwargs["base_url"] = base_url
 
-llm = ChatOpenAI(**llm_kwargs)
+    return ChatOpenAI(**llm_kwargs)
+
 
 XML_TAGS = re.compile(
     r"<ElicitationsGroup\b[^>]*>[\s\S]*?</ElicitationsGroup>|"
@@ -75,6 +76,8 @@ async def ensure_initialized():
             return
         except Exception as e:
             print(f"Warning: Failed to connect to Postgres checkpointer: {e}")
+            pool = None
+            checkpointer = None
     chatbot = graph.compile()
 
 
@@ -90,7 +93,19 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    await ensure_initialized()
+    try:
+        await ensure_initialized()
+    except Exception as e:
+        print(f"Startup initialization error: {e}")
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "has_openai_key": bool(os.getenv("OPENAI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
+        "has_db_url": bool(os.getenv("NEON_DATABASE_URL")),
+    }
 
 
 class ChatRequest(BaseModel):
@@ -102,11 +117,12 @@ async def get_history(thread_id: str) -> list:
     await ensure_initialized()
     if not chatbot:
         return []
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": str(thread_id)}}
     try:
         state = await chatbot.aget_state(config)
         return state.values.get("messages", []) if state.values else []
-    except Exception:
+    except Exception as e:
+        print(f"Error in get_history for thread {thread_id}: {e}")
         return []
 
 
@@ -124,10 +140,17 @@ def index():
     return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
 
 
-
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    config = {"configurable": {"thread_id": req.thread_id}}
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        async def err_stream():
+            yield f"data: {json.dumps({'token': '⚠️ Error: Neither OPENAI_API_KEY nor GOOGLE_API_KEY is configured in Vercel environment variables.'})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        return StreamingResponse(err_stream(), media_type="text/event-stream")
+
+    llm = get_llm()
+    config = {"configurable": {"thread_id": str(req.thread_id)}}
     history = await get_history(req.thread_id)
 
     async def stream():
@@ -161,32 +184,47 @@ async def chat(req: ChatRequest):
 
 @app.get("/conversation")
 async def list_conversations():
-    await ensure_initialized()
-    if not pool:
-        return {"conversations": []}
     try:
+        await ensure_initialized()
+        if not pool:
+            return {"conversations": []}
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
-                thread_ids = [row[0] for row in await cur.fetchall()]
-    except Exception:
+                rows = await cur.fetchall()
+                thread_ids = [row[0] for row in rows]
+    except Exception as e:
+        print(f"Error listing threads from db: {e}")
         return {"conversations": []}
 
     result = []
     for tid in thread_ids:
-        msgs = await get_history(tid)
-        if not msgs:
+        try:
+            tid_str = str(tid)
+            msgs = await get_history(tid_str)
+            if not msgs:
+                continue
+            first_user = next(
+                (
+                    m.content if isinstance(m.content, str) else str(m.content)
+                    for m in msgs
+                    if isinstance(m, HumanMessage)
+                ),
+                tid_str,
+            )
+            last_content = msgs[-1].content if msgs else ""
+            last_msg = last_content if isinstance(last_content, str) else str(last_content)
+            result.append(
+                {
+                    "thread_id": tid_str,
+                    "title": str(first_user)[:50],
+                    "message_count": len(msgs),
+                    "preview": str(last_msg)[:80],
+                }
+            )
+        except Exception as e:
+            print(f"Error processing thread {tid}: {e}")
             continue
-        first_user = next((m.content for m in msgs if isinstance(m, HumanMessage)), tid)
-        last_msg = msgs[-1].content[:80] if msgs else ""
-        result.append(
-            {
-                "thread_id": tid,
-                "title": first_user[:50],
-                "message_count": len(msgs),
-                "preview": last_msg,
-            }
-        )
 
     return {"conversations": result}
 
@@ -194,15 +232,15 @@ async def list_conversations():
 @app.get("/conversation/{thread_id}")
 async def get_conversation(thread_id: str):
     await ensure_initialized()
-    msgs = await get_history(thread_id)
+    msgs = await get_history(str(thread_id))
     if not msgs:
         raise HTTPException(status_code=404, detail="Thread not found")
     return {
-        "thread_id": thread_id,
+        "thread_id": str(thread_id),
         "messages": [
             {
                 "role": "user" if isinstance(m, HumanMessage) else "assistant",
-                "content": m.content,
+                "content": m.content if isinstance(m.content, str) else str(m.content),
             }
             for m in msgs
         ],
@@ -213,17 +251,16 @@ async def get_conversation(thread_id: str):
 async def delete_conversation(thread_id: str):
     await ensure_initialized()
     if not pool:
-        return {"status": "ok", "deleted": thread_id}
+        return {"status": "ok", "deleted": str(thread_id)}
     try:
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
+                await cur.execute("DELETE FROM checkpoints WHERE thread_id = %s", (str(thread_id),))
                 for table in ("checkpoint_blobs", "checkpoint_writes"):
                     try:
-                        await cur.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
+                        await cur.execute(f"DELETE FROM {table} WHERE thread_id = %s", (str(thread_id),))
                     except Exception:
                         pass
-        return {"status": "ok", "deleted": thread_id}
+        return {"status": "ok", "deleted": str(thread_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
