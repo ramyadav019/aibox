@@ -1,3 +1,15 @@
-from api.index import app
+import sys
+import os
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+CHATBOT_DIR = os.path.join(ROOT_DIR, "Chatbot")
+
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if CHATBOT_DIR not in sys.path:
+    sys.path.insert(0, CHATBOT_DIR)
+
+from Chatbot.backend import app
 
 __all__ = ["app"]
+
