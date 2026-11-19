@@ -487,9 +487,12 @@ function App() {
 
   // Filter conversations
   const filteredConversations = useMemo(() => {
-    if (!searchQuery.trim()) return conversations;
+    const sorted = [...conversations].sort((a, b) =>
+      b.thread_id.localeCompare(a.thread_id, undefined, { numeric: true })
+    );
+    if (!searchQuery.trim()) return sorted;
     const q = searchQuery.toLowerCase();
-    return conversations.filter(
+    return sorted.filter(
       (c) =>
         (c.title && c.title.toLowerCase().includes(q)) ||
         (c.preview && c.preview.toLowerCase().includes(q)),
