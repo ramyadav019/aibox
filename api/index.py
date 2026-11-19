@@ -1,15 +1,10 @@
 import sys
 import os
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(CURRENT_DIR)
-CHATBOT_DIR = os.path.join(ROOT_DIR, "Chatbot")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-for path in [ROOT_DIR, CHATBOT_DIR, CURRENT_DIR]:
-    if os.path.exists(path) and path not in sys.path:
-        sys.path.insert(0, path)
+from main import app
 
-try:
-    from Chatbot.backend import app
-except ImportError:
-    from backend import app
+__all__ = ["app"]
