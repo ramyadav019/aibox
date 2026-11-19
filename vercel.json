@@ -1,27 +1,47 @@
 {
-  "version": 2,
-  "outputDirectory": "Chatbot/dist",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "app": {
+      "root": ".",
+      "framework": "fastapi"
+    },
+    "chatbot": {
+      "root": "Chatbot",
+      "framework": "vite",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "app",
+          "format": "url",
+          "env": "BACKEND_URL"
+        }
+      ]
     }
   },
   "rewrites": [
     {
       "source": "/chat",
-      "destination": "/api/index.py"
+      "destination": {
+        "service": "app"
+      }
     },
     {
       "source": "/conversation",
-      "destination": "/api/index.py"
+      "destination": {
+        "service": "app"
+      }
     },
     {
-      "source": "/conversation/:match*",
-      "destination": "/api/index.py"
+      "source": "/conversation/(.*)",
+      "destination": {
+        "service": "app"
+      }
     },
     {
       "source": "/(.*)",
-      "destination": "/$1"
+      "destination": {
+        "service": "chatbot"
+      }
     }
   ]
 }
