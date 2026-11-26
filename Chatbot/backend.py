@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -5,7 +6,7 @@ from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -141,7 +142,7 @@ def index():
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         async def err_stream():
@@ -150,8 +151,26 @@ async def chat(req: ChatRequest):
         return StreamingResponse(err_stream(), media_type="text/event-stream")
 
     llm = get_llm()
-    config = {"configurable": {"thread_id": str(req.thread_id)}}
+    config = {
+        "configurable": {"thread_id": str(req.thread_id)},
+        "run_name": f"chat-thread-{req.thread_id}",
+        "metadata": {
+            "thread_id": str(req.thread_id),
+            "user_message": req.message[:100],
+        },
+    }
     history = await get_history(req.thread_id)
+
+    async def save_messages(user_msg: str, ai_msg: str):
+        try:
+            clean = XML_TAGS.sub("", ai_msg).strip()
+            async for _ in chatbot.astream(
+                {"messages": [HumanMessage(content=user_msg), AIMessage(content=clean)]},
+                config=config,
+            ):
+                pass
+        except Exception as e:
+            print(f"Error saving to checkpoint: {e}")
 
     async def stream():
         full = ""
@@ -165,19 +184,8 @@ async def chat(req: ChatRequest):
             print(f"Error streaming LLM tokens: {e}")
             yield f"data: {json.dumps({'token': f'\n\n⚠️ Error: {str(e)}'})}\n\n"
 
-        # Notify the client that generation is complete immediately
+        background_tasks.add_task(save_messages, req.message, full)
         yield f"data: {json.dumps({'done': True})}\n\n"
-
-        # Save to checkpoint
-        try:
-            clean = XML_TAGS.sub("", full).strip()
-            async for _ in chatbot.astream(
-                {"messages": [HumanMessage(content=req.message), AIMessage(content=clean)]},
-                config=config,
-            ):
-                pass
-        except Exception as e:
-            print(f"Error saving to checkpoint: {e}")
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
